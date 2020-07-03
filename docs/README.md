@@ -1,4 +1,3 @@
----
 # Vue
 Home: https://cn.vuejs.org/
 
@@ -1682,6 +1681,1037 @@ export function initInternalComponent (vm: Component, options: InternalComponent
 
 # 响应式数据
 
+> vue 2.x --- Object.defineProperty(obj, key, descriptor)		&&		vue 3.x --- Proxy(target, handler)
+
+既然是将我们定义好的数据进行响应式处理，那么先看看数据的相关操作：
+
+## init
+
+## src\core\instance\init.js
+
+```js
+
+  Vue.prototype._init = function (options?: Object) {
+    // ... 
+      
+    // expose real self
+    vm._self = vm
+    initLifecycle(vm)
+    initEvents(vm)
+    initRender(vm)
+    callHook(vm, 'beforeCreate')
+    initInjections(vm) // resolve injections before data/props
+    // key
+    initState(vm)
+    initProvide(vm) // resolve provide after data/props
+    callHook(vm, 'created')
+      // ...
+  }
+```
+
+## src\core\instance\state.js
+
+### initState
+
+```js
+// init props/methods/data/computed/watch
+export function initState (vm: Component) {
+  vm._watchers = []
+  const opts = vm.$options
+  if (opts.props) initProps(vm, opts.props)
+  if (opts.methods) initMethods(vm, opts.methods)
+  if (opts.data) {
+    initData(vm)
+  } else {
+    observe(vm._data = {}, true /* asRootData */)
+  }
+  if (opts.computed) initComputed(vm, opts.computed)
+  if (opts.watch && opts.watch !== nativeWatch) {
+    initWatch(vm, opts.watch)
+  }
+}
+```
+
+### initData
+
+```js
+function initData (vm: Component) {
+  let data = vm.$options.data
+  data = vm._data = typeof data === 'function'
+    ? getData(data, vm)
+    : data || {}
+  if (!isPlainObject(data)) {
+    data = {}
+    process.env.NODE_ENV !== 'production' && warn(
+      'data functions should return an object:\n' +
+      'https://vuejs.org/v2/guide/components.html#data-Must-Be-a-Function',
+      vm
+    )
+  }
+  // proxy data on instance
+  const keys = Object.keys(data)
+  const props = vm.$options.props
+  const methods = vm.$options.methods
+  let i = keys.length
+  while (i--) {
+    const key = keys[i]
+    if (process.env.NODE_ENV !== 'production') {
+      if (methods && hasOwn(methods, key)) {
+        warn(
+          `Method "${key}" has already been defined as a data property.`,
+          vm
+        )
+      }
+    }
+    if (props && hasOwn(props, key)) {
+      process.env.NODE_ENV !== 'production' && warn(
+        `The data property "${key}" is already declared as a prop. ` +
+        `Use prop default value instead.`,
+        vm
+      )
+    } else if (!isReserved(key)) {
+      proxy(vm, `_data`, key)
+    }
+  }
+  // observe data
+  observe(data, true /* asRootData */)
+}
+```
+
+其实整段代码很简单了现在看着，先进行了一些条件判断并给予`warn`，然后将`vm._data.xxx`代理到`vm.xxx`，具体见 `proxy`方法；重点是最后的 `oberver` 方法，会将`data`进行响应式处理。
+
+### src\core\observer\index.js
+
+#### observer function
+
+```js
+/**
+ * Attempt to create an observer instance for a value,
+ * returns the new observer if successfully observed,
+ * or the existing observer if the value already has one.
+ */
+export function observe (value: any, asRootData: ?boolean): Observer | void {
+  if (!isObject(value) || value instanceof VNode) {
+    return
+  }
+  let ob: Observer | void
+  // 如果已经有 __ob__ 则直接返回，否则对需要响应式处理的数据进行实例化 Observer
+  if (hasOwn(value, '__ob__') && value.__ob__ instanceof Observer) {
+    ob = value.__ob__
+  } else if (
+    shouldObserve &&
+    !isServerRendering() &&
+    (Array.isArray(value) || isPlainObject(value)) &&
+    Object.isExtensible(value) &&
+    !value._isVue
+  ) {
+    ob = new Observer(value)
+  }
+  if (asRootData && ob) {
+    ob.vmCount++
+  }
+  return ob
+}
+```
+
+#### Observer class
+
+```js
+/**
+ * Observer class that is attached to each observed
+ * object. Once attached, the observer converts the target
+ * object's property keys into getter/setters that
+ * collect dependencies and dispatch updates.
+ */
+export class Observer {
+  value: any;
+  dep: Dep;
+  vmCount: number; // number of vms that have this object as root $data
+
+  constructor (value: any) {
+    this.value = value
+    this.dep = new Dep()
+    this.vmCount = 0
+    //  将自己加到 __ob__ 属性上，注意只传入了三个参数，那么 def 中的 enumerable 就为 false，因为我们需要将该属性设为不可枚举，这样在调用 walk 时就不需要将该属性也响应式处理
+    def(value, '__ob__', this)
+    if (Array.isArray(value)) {
+      if (hasProto) {
+        protoAugment(value, arrayMethods)
+      } else {
+        copyAugment(value, arrayMethods, arrayKeys)
+      }
+      this.observeArray(value)
+    } else {
+      this.walk(value)
+    }
+  }
+
+  /**
+   * Walk through all properties and convert them into
+   * getter/setters. This method should only be called when
+   * value type is Object.
+   */
+  walk (obj: Object) {
+    const keys = Object.keys(obj)
+    for (let i = 0; i < keys.length; i++) {
+      defineReactive(obj, keys[i])
+    }
+  }
+
+  /**
+   * Observe a list of Array items.
+   */
+  observeArray (items: Array<any>) {
+    for (let i = 0, l = items.length; i < l; i++) {
+      observe(items[i])
+    }
+  }
+}
+```
+
+#### def function
+
+```js
+// src\core\util\lang.js
+/**
+ * Define a property.
+ */
+export function def (obj: Object, key: string, val: any, enumerable?: boolean) {
+  Object.defineProperty(obj, key, {
+    value: val,
+    enumerable: !!enumerable,
+    writable: true,
+    configurable: true
+  })
+}
+```
+
+接下来进入 `defineReactive`，核心的响应式处理方法。
+
+#### defineReactive function
+
+```js
+/**
+ * Define a reactive property on an Object.
+ */
+export function defineReactive (
+  obj: Object,
+  key: string,
+  val: any,
+  customSetter?: ?Function,
+  shallow?: boolean
+) {
+  const dep = new Dep()
+
+  const property = Object.getOwnPropertyDescriptor(obj, key)
+  if (property && property.configurable === false) {
+    return
+  }
+
+  // cater for pre-defined getter/setters
+  const getter = property && property.get
+  const setter = property && property.set
+  if ((!getter || setter) && arguments.length === 2) {
+    val = obj[key]
+  }
+
+  // 递归 observer
+  let childOb = !shallow && observe(val)
+  Object.defineProperty(obj, key, {
+    enumerable: true,
+    configurable: true,
+    get: function reactiveGetter () {
+      const value = getter ? getter.call(obj) : val
+      // 依赖收集
+      if (Dep.target) {
+        dep.depend()
+        if (childOb) {
+          childOb.dep.depend()
+          if (Array.isArray(value)) {
+            dependArray(value)
+          }
+        }
+      }
+      return value
+    },
+    set: function reactiveSetter (newVal) {
+      const value = getter ? getter.call(obj) : val
+      // 派发更新
+      /* eslint-disable no-self-compare */
+      if (newVal === value || (newVal !== newVal && value !== value)) {
+        return
+      }
+      /* eslint-enable no-self-compare */
+      if (process.env.NODE_ENV !== 'production' && customSetter) {
+        customSetter()
+      }
+      // #7981: for accessor properties without setter
+      if (getter && !setter) return
+      if (setter) {
+        setter.call(obj, newVal)
+      } else {
+        val = newVal
+      }
+      childOb = !shallow && observe(newVal)
+      // 通知订阅者进行相关操作
+      dep.notify()
+    }
+  })
+}
+```
+
+其中的依赖收集和派发更新非常的重要！
+
+## 依赖收集
+
+> 当响应式数据变化时，重新渲染页面时则会触发 getter / setter ，而我们则需要收集相关的依赖来通知对应的订阅者去做应该处理的操作。
+
+```js
+const dep = new Dep()
+
+const property = Object.getOwnPropertyDescriptor(obj, key)
+if (property && property.configurable === false) {
+    return
+}
+
+// cater for pre-defined getter/setters
+const getter = property && property.get
+const setter = property && property.set
+if ((!getter || setter) && arguments.length === 2) {
+    val = obj[key]
+}
+
+// 递归 observer
+let childOb = !shallow && observe(val)
+Object.defineProperty(obj, key, {
+    enumerable: true,
+    configurable: true,
+    get: function reactiveGetter () {
+        const value = getter ? getter.call(obj) : val
+        // 依赖收集
+        if (Dep.target) {
+            dep.depend()
+            if (childOb) {
+                childOb.dep.depend()
+                if (Array.isArray(value)) {
+                    dependArray(value)
+                }
+            }
+        }
+        return value
+    },
+```
+
+### src\core\observer\dep.js
+
+```js
+/* @flow */
+
+import type Watcher from './watcher'
+import { remove } from '../util/index'
+import config from '../config'
+
+let uid = 0
+
+/**
+ * A dep is an observable that can have multiple
+ * directives subscribing to it.
+ */
+export default class Dep {
+  static target: ?Watcher;
+  id: number;
+  subs: Array<Watcher>;
+
+  constructor () {
+    this.id = uid++
+    this.subs = []
+  }
+
+  addSub (sub: Watcher) {
+    this.subs.push(sub)
+  }
+
+  removeSub (sub: Watcher) {
+    remove(this.subs, sub)
+  }
+
+  depend () {
+    if (Dep.target) {
+      Dep.target.addDep(this)
+    }
+  }
+
+  notify () {
+    // stabilize the subscriber list first
+    const subs = this.subs.slice()
+    if (process.env.NODE_ENV !== 'production' && !config.async) {
+      // subs aren't sorted in scheduler if not running async
+      // we need to sort them now to make sure they fire in correct
+      // order
+      subs.sort((a, b) => a.id - b.id)
+    }
+    for (let i = 0, l = subs.length; i < l; i++) {
+      subs[i].update()
+    }
+  }
+}
+
+// The current target watcher being evaluated.
+// This is globally unique because only one watcher
+// can be evaluated at a time.
+Dep.target = null
+const targetStack = []
+
+export function pushTarget (target: ?Watcher) {
+  targetStack.push(target)
+  Dep.target = target
+}
+
+export function popTarget () {
+  targetStack.pop()
+  Dep.target = targetStack[targetStack.length - 1]
+}
+```
+
+### src\core\observer\watcher.js
+
+```js
+/* @flow */
+
+import {
+  warn,
+  remove,
+  isObject,
+  parsePath,
+  _Set as Set,
+  handleError,
+  noop
+} from '../util/index'
+
+import { traverse } from './traverse'
+import { queueWatcher } from './scheduler'
+import Dep, { pushTarget, popTarget } from './dep'
+
+import type { SimpleSet } from '../util/index'
+
+let uid = 0
+
+/**
+ * A watcher parses an expression, collects dependencies,
+ * and fires callback when the expression value changes.
+ * This is used for both the $watch() api and directives.
+ */
+export default class Watcher {
+  vm: Component;
+  expression: string;
+  cb: Function;
+  id: number;
+  deep: boolean;
+  user: boolean;
+  lazy: boolean;
+  sync: boolean;
+  dirty: boolean;
+  active: boolean;
+  deps: Array<Dep>;
+  newDeps: Array<Dep>;
+  depIds: SimpleSet;
+  newDepIds: SimpleSet;
+  before: ?Function;
+  getter: Function;
+  value: any;
+
+  constructor (
+    vm: Component,
+    expOrFn: string | Function,
+    cb: Function,
+    options?: ?Object,
+    isRenderWatcher?: boolean
+  ) {
+    this.vm = vm
+    if (isRenderWatcher) {
+      vm._watcher = this
+    }
+    vm._watchers.push(this)
+    // options
+    if (options) {
+      this.deep = !!options.deep
+      this.user = !!options.user
+      this.lazy = !!options.lazy
+      this.sync = !!options.sync
+      this.before = options.before
+    } else {
+      this.deep = this.user = this.lazy = this.sync = false
+    }
+    this.cb = cb
+    this.id = ++uid // uid for batching
+    this.active = true
+    this.dirty = this.lazy // for lazy watchers
+    this.deps = []
+    this.newDeps = []
+    this.depIds = new Set()
+    this.newDepIds = new Set()
+    this.expression = process.env.NODE_ENV !== 'production'
+      ? expOrFn.toString()
+      : ''
+    // parse expression for getter
+    if (typeof expOrFn === 'function') {
+      this.getter = expOrFn
+    } else {
+      this.getter = parsePath(expOrFn)
+      if (!this.getter) {
+        this.getter = noop
+        process.env.NODE_ENV !== 'production' && warn(
+          `Failed watching path: "${expOrFn}" ` +
+          'Watcher only accepts simple dot-delimited paths. ' +
+          'For full control, use a function instead.',
+          vm
+        )
+      }
+    }
+    this.value = this.lazy
+      ? undefined
+      : this.get()
+  }
+
+  /**
+   * Evaluate the getter, and re-collect dependencies.
+   */
+  get () {
+    pushTarget(this)
+    let value
+    const vm = this.vm
+    try {
+      value = this.getter.call(vm, vm)
+    } catch (e) {
+      if (this.user) {
+        handleError(e, vm, `getter for watcher "${this.expression}"`)
+      } else {
+        throw e
+      }
+    } finally {
+      // "touch" every property so they are all tracked as
+      // dependencies for deep watching
+      if (this.deep) {
+        traverse(value)
+      }
+      popTarget()
+      this.cleanupDeps()
+    }
+    return value
+  }
+
+  /**
+   * Add a dependency to this directive.
+   */
+  addDep (dep: Dep) {
+    const id = dep.id
+    if (!this.newDepIds.has(id)) {
+      this.newDepIds.add(id)
+      this.newDeps.push(dep)
+      if (!this.depIds.has(id)) {
+        dep.addSub(this)
+      }
+    }
+  }
+
+  /**
+   * Clean up for dependency collection.
+   */
+  cleanupDeps () {
+    let i = this.deps.length
+    while (i--) {
+      const dep = this.deps[i]
+      if (!this.newDepIds.has(dep.id)) {
+        dep.removeSub(this)
+      }
+    }
+    let tmp = this.depIds
+    this.depIds = this.newDepIds
+    this.newDepIds = tmp
+    this.newDepIds.clear()
+    tmp = this.deps
+    this.deps = this.newDeps
+    this.newDeps = tmp
+    this.newDeps.length = 0
+  }
+
+  /**
+   * Subscriber interface.
+   * Will be called when a dependency changes.
+   */
+  update () {
+    /* istanbul ignore else */
+    if (this.lazy) {
+      this.dirty = true
+    } else if (this.sync) {
+      this.run()
+    } else {
+      queueWatcher(this)
+    }
+  }
+
+  /**
+   * Scheduler job interface.
+   * Will be called by the scheduler.
+   */
+  run () {
+    if (this.active) {
+      const value = this.get()
+      if (
+        value !== this.value ||
+        // Deep watchers and watchers on Object/Arrays should fire even
+        // when the value is the same, because the value may
+        // have mutated.
+        isObject(value) ||
+        this.deep
+      ) {
+        // set new value
+        const oldValue = this.value
+        this.value = value
+        if (this.user) {
+          try {
+            this.cb.call(this.vm, value, oldValue)
+          } catch (e) {
+            handleError(e, this.vm, `callback for watcher "${this.expression}"`)
+          }
+        } else {
+          this.cb.call(this.vm, value, oldValue)
+        }
+      }
+    }
+  }
+
+  /**
+   * Evaluate the value of the watcher.
+   * This only gets called for lazy watchers.
+   */
+  evaluate () {
+    this.value = this.get()
+    this.dirty = false
+  }
+
+  /**
+   * Depend on all deps collected by this watcher.
+   */
+  depend () {
+    let i = this.deps.length
+    while (i--) {
+      this.deps[i].depend()
+    }
+  }
+
+  /**
+   * Remove self from all dependencies' subscriber list.
+   */
+  teardown () {
+    if (this.active) {
+      // remove self from vm's watcher list
+      // this is a somewhat expensive operation so we skip it
+      // if the vm is being destroyed.
+      if (!this.vm._isBeingDestroyed) {
+        remove(this.vm._watchers, this)
+      }
+      let i = this.deps.length
+      while (i--) {
+        this.deps[i].removeSub(this)
+      }
+      this.active = false
+    }
+  }
+}
+```
+
+其实单看里面的方法并不复杂，但是每个方法的调用稍微有点复杂，接下来我们通过能执行到 get 的路径进行分析！
+
+之前有碰到 `mountComponent`方法，里面会进行实例化一个渲染`Watcher`并把`updateComponent`方法传入到构造函数中：
+
+```js
+// src\core\instance\lifecycle.js
+//  Key
+updateComponent = () => {
+    //  vm._render() 将返回一个 VNode
+    vm._update(vm._render(), hydrating)
+}
+
+  // we set this to vm._watcher inside the watcher's constructor
+  // since the watcher's initial patch may call $forceUpdate (e.g. inside child
+  // component's mounted hook), which relies on vm._watcher being already defined
+  // 渲染 watcher ,因为我们后续数据更新后就还需要使用该渲染 watcher to update view
+  // 通过传入第五个 boolean 类型的参数来区分 watcher 类型，因为后续我们还有用于数据绑定的 watcher
+  new Watcher(vm, updateComponent, noop, {
+    before () {
+      if (vm._isMounted && !vm._isDestroyed) {
+        callHook(vm, 'beforeUpdate')
+      }
+    }
+  }, true /* isRenderWatcher */)
+  hydrating = false
+```
+
+调用 `watcher`构造函数的过程见 <a href="#src\core\observer\watcher.js">watcher</a>
+
+```js
+
+export default class Watcher {constructor (
+    vm: Component,
+    expOrFn: string | Function,
+    cb: Function,
+    options?: ?Object,
+    isRenderWatcher?: boolean
+  ) {}
+  // parse expression for getter
+    if (typeof expOrFn === 'function') {
+      this.getter = expOrFn
+    }
+  this.value = this.lazy
+      ? undefined
+      : this.get()
+
+
+// The current target watcher being evaluated.
+// This is globally unique because only one watcher
+// can be evaluated at a time.
+Dep.target = null
+const targetStack = []
+
+export function pushTarget (target: ?Watcher) {
+  targetStack.push(target)
+  Dep.target = target
+}
+
+export function popTarget () {
+  targetStack.pop()
+  Dep.target = targetStack[targetStack.length - 1]
+}
+
+
+  get () {
+    pushTarget(this)
+    let value
+    const vm = this.vm
+    try {
+        // 这里的 getter 就是 updateComponent （vm._update(vm._render(), hydrating)）
+      value = this.getter.call(vm, vm)
+    } finally {
+      // "touch" every property so they are all tracked as
+      // dependencies for deep watching
+      if (this.deep) {
+        traverse(value)
+      }
+      popTarget()
+      this.cleanupDeps()
+    }
+    return value
+}
+```
+
+分析：将`updateComponent`传入后作为`watcher`中`this.getter`，然后会将当前的渲染 watcher 赋值给 `Dep.target`，然后进行调用`getter`自然就会调用`_render`和`render`，然后就会获取相应的值调用`getter`，进行依赖收集。
+
+```js
+dep.depend()
+
+depend () {
+    // 此时为当前渲染 watcher 
+    if (Dep.target) {
+        Dep.target.addDep(this)
+    }
+}
+
+/**
+   * Add a dependency to this directive.
+   */
+addDep (dep: Dep) {
+    const id = dep.id
+    if (!this.newDepIds.has(id)) {
+        this.newDepIds.add(id)
+        this.newDeps.push(dep)
+        if (!this.depIds.has(id)) {
+            dep.addSub(this)
+        }
+    }
+}
+
+addSub (sub: Watcher) {
+    this.subs.push(sub)
+  }
+
+popTarget()
+this.cleanupDeps()
+
+export function popTarget () {
+  targetStack.pop()
+  Dep.target = targetStack[targetStack.length - 1]
+}
+```
+
+而 cleanupDeps 是一个性能的优化点，具体来看：
+
+```js
+  /**
+   * Clean up for dependency collection.
+   */
+  cleanupDeps () {
+    let i = this.deps.length
+    while (i--) {
+      const dep = this.deps[i]
+      if (!this.newDepIds.has(dep.id)) {
+        dep.removeSub(this)
+      }
+    }
+    let tmp = this.depIds
+    this.depIds = this.newDepIds
+    this.newDepIds = tmp
+    this.newDepIds.clear()
+    tmp = this.deps
+    this.deps = this.newDeps
+    this.newDeps = tmp
+    this.newDeps.length = 0
+  }
+```
+
+因为 `Vue` 是数据驱动的，所以每次数据变化后都会重新 render，那么又会执行 `_render()` 方法，并再次触发数据的 getters，所以 `Wathcer` 在构造函数中会初始化 2 个 `Dep` 实例数组，`newDeps` 表示新添加的 `Dep` 实例数组，而 `deps` 表示上一次添加的 `Dep` 实例数组。
+
+在执行 `cleanupDeps` 函数的时候，会首先遍历 `deps`，移除对 `dep.subs` 数组中 `Wathcer` 的订阅，然后把 `newDepIds` 和 `depIds` 交换，`newDeps` 和 `deps` 交换，并把 `newDepIds` 和 `newDeps` 清空。
+
+那么为什么需要做 `deps` 订阅的移除呢，在添加 `deps` 的订阅过程，已经能通过 `id` 去重避免重复订阅了。
+
+考虑到一种场景，我们的模板会根据 `v-if` 去渲染不同子模板 a 和 b，当我们满足某种条件的时候渲染 a 的时候，会访问到 a 中的数据，这时候我们对 a 使用的数据添加了 getter，做了依赖收集，那么当我们去修改 a 的数据的时候，理应通知到这些订阅者。那么如果我们一旦改变了条件渲染了 b 模板，又会对 b 使用的数据添加了 getter，如果我们没有依赖移除的过程，那么这时候我去修改 a 模板的数据，会通知 a 数据的订阅的回调，这显然是有浪费的，因为此时其实我们并不需要将其改变重新渲染到界面。
+
+因此 Vue 在每次添加完新的订阅后，会移除掉旧的订阅，这样就保证了在我们刚才的场景中，如果渲染 b 模板的时候去修改 a 模板的数据，而 a 数据订阅回调已经被移除了。
+
+## 派发更新
+
+```js
+set: function reactiveSetter (newVal) {
+      const value = getter ? getter.call(obj) : val
+      // 派发更新
+      // 如果值并没有改变则直接返回
+      /* eslint-disable no-self-compare */
+      if (newVal === value || (newVal !== newVal && value !== value)) {
+        return
+      }
+      /* eslint-enable no-self-compare */
+      if (process.env.NODE_ENV !== 'production' && customSetter) {
+        customSetter()
+      }
+      // #7981: for accessor properties without setter
+      if (getter && !setter) return
+      if (setter) {
+        setter.call(obj, newVal)
+      } else {
+        val = newVal
+      }
+      // 递归
+      childOb = !shallow && observe(newVal)
+      // 通知订阅者进行相关操作
+      dep.notify()
+    }
+```
+
+### notify
+
+```js
+// src\core\observer\dep.js
+notify () {
+    // stabilize the subscriber list first
+    const subs = this.subs.slice()
+    if (process.env.NODE_ENV !== 'production' && !config.async) {
+      // subs aren't sorted in scheduler if not running async
+      // we need to sort them now to make sure they fire in correct
+      // order
+      subs.sort((a, b) => a.id - b.id)
+    }
+    for (let i = 0, l = subs.length; i < l; i++) {
+      subs[i].update()
+    }
+  }
+```
+
+### update
+
+```js
+// src\core\observer\watcher.js
+/**
+   * Subscriber interface.
+   * Will be called when a dependency changes.
+   */
+  update () {
+    /* istanbul ignore else */
+    if (this.lazy) {
+      this.dirty = true
+    } else if (this.sync) {
+      this.run()
+    } else {
+      queueWatcher(this)
+    }
+  }
+```
+
+### queueWatcher
+
+```js
+// src\core\observer\scheduler.js
+
+/**
+ * Push a watcher into the watcher queue.
+ * Jobs with duplicate IDs will be skipped unless it's
+ * pushed when the queue is being flushed.
+ */
+export function queueWatcher (watcher: Watcher) {
+  // 得到对应的 watcher 的唯一 id
+  const id = watcher.id
+  // 保证加入一次 watcher
+  if (has[id] == null) {
+    has[id] = true
+    if (!flushing) {
+      queue.push(watcher)
+    } else {
+      // if already flushing, splice the watcher based on its id
+      // if already past its id, it will be run next immediately.
+      let i = queue.length - 1
+      while (i > index && queue[i].id > watcher.id) {
+        i--
+      }
+      queue.splice(i + 1, 0, watcher)
+    }
+    // queue the flush
+    if (!waiting) {
+      waiting = true
+
+      if (process.env.NODE_ENV !== 'production' && !config.async) {
+        flushSchedulerQueue()
+        return
+      }
+      nextTick(flushSchedulerQueue)
+    }
+  }
+}
+```
+
+### flushSchedulerQueue
+
+```js
+// src\core\observer\scheduler.js
+
+/**
+ * Flush both queues and run the watchers.
+ */
+function flushSchedulerQueue () {
+  currentFlushTimestamp = getNow()
+  flushing = true
+  let watcher, id
+
+  // Sort queue before flush.
+  // This ensures that:
+  // 1. Components are updated from parent to child. (because parent is always
+  //    created before the child)
+  // 2. A component's user watchers are run before its render watcher (because
+  //    user watchers are created before the render watcher)
+  // 3. If a component is destroyed during a parent component's watcher run,
+  //    its watchers can be skipped.
+  queue.sort((a, b) => a.id - b.id)
+
+  // do not cache length because more watchers might be pushed
+  // as we run existing watchers
+  for (index = 0; index < queue.length; index++) {
+    watcher = queue[index]
+    if (watcher.before) {
+      watcher.before()
+    }
+    id = watcher.id
+    has[id] = null
+    // 触发其他回调函数时可能又会触发 queueWatcher and  make queue.length mag be chang
+    watcher.run()
+    // in dev build, check and stop circular updates.
+    if (process.env.NODE_ENV !== 'production' && has[id] != null) {
+      circular[id] = (circular[id] || 0) + 1
+      if (circular[id] > MAX_UPDATE_COUNT) {
+        warn(
+          'You may have an infinite update loop ' + (
+            watcher.user
+              ? `in watcher with expression "${watcher.expression}"`
+              : `in a component render function.`
+          ),
+          watcher.vm
+        )
+        break
+      }
+    }
+  }
+
+  // keep copies of post queues before resetting state
+  const activatedQueue = activatedChildren.slice()
+  const updatedQueue = queue.slice()
+
+  resetSchedulerState()
+
+  // call component updated and activated hooks
+  callActivatedHooks(activatedQueue)
+  callUpdatedHooks(updatedQueue)
+
+  // devtool hook
+  /* istanbul ignore if */
+  if (devtools && config.devtools) {
+    devtools.emit('flush')
+  }
+}
+
+/**
+ * Reset the scheduler's state.
+ */
+function resetSchedulerState () {
+  index = queue.length = activatedChildren.length = 0
+  has = {}
+  if (process.env.NODE_ENV !== 'production') {
+    circular = {}
+  }
+  waiting = flushing = false
+}
+```
+
+### run
+
+```js
+// src\core\observer\watcher.js
+
+/**
+   * Scheduler job interface.
+   * Will be called by the scheduler.
+   */
+run () {
+    if (this.active) {
+      const value = this.get()
+      if (
+        value !== this.value ||
+        // Deep watchers and watchers on Object/Arrays should fire even
+        // when the value is the same, because the value may
+        // have mutated.
+        isObject(value) ||
+        this.deep
+      ) {
+        // set new value
+        const oldValue = this.value
+        this.value = value
+        // 自定义 watcher 时
+        if (this.user) {
+          try {
+            // 将我们的新旧值返回到回调中，watch(){ xxx(newValue, oldValue){...} ...}
+            this.cb.call(this.vm, value, oldValue)
+          } catch (e) {
+            handleError(e, this.vm, `callback for watcher "${this.expression}"`)
+          }
+        } else {
+          this.cb.call(this.vm, value, oldValue)
+        }
+      }
+    }
+```
+
+接着就会执行`渲染watcher`的`this.get()`（具体见 watcher.js），然后执行`getter`,`_render`,`__patch__`等，达到页面更新的目的。
+
+# nextTick
+
 
 
 > 后续继续不断更新！
+
